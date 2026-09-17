@@ -239,7 +239,14 @@ Expected output:
   ✅ ALL PASSED — Scenarios: 10/10, Assertions: 67/67
 ```
 
-### Start the Chat
+### Start the Interactive Web App (Streamlit)
+
+```bash
+streamlit run app.py
+```
+> Opens an interactive web interface at `http://localhost:8501`. Judges can chat with the agent live, toggle failure modes to see real-time error recovery, and watch the 7-tab dashboard (span tree, flamegraph, Plotly token flow, context budget bars, tool analytics, and conversation replay) update with every query.
+
+### Start the Terminal Chat (CLI)
 
 ```bash
 python prism/cli.py                      # deterministic mode (no API key)
@@ -247,6 +254,19 @@ python prism/cli.py --llm gemini         # Google Gemini (needs GEMINI_API_KEY)
 python prism/cli.py --llm openai         # OpenAI GPT (needs OPENAI_API_KEY)
 python prism/cli.py --llm anthropic      # Claude (needs ANTHROPIC_API_KEY)
 ```
+
+### 🌐 Deployments (For Judges & Reviewers)
+
+| Platform | Type | How to Access / Deploy |
+|:---|:---|:---|
+| **Streamlit Community Cloud** | Live Interactive Agent + Traces | Connect GitHub repo `ReasonableExcuses/prism`, select `app.py`, and click Deploy. Free hosting with live chat and real-time observability. |
+| **Netlify** | Self-Contained Static Dashboard | Zero-config static deploy via `netlify.toml` and pre-built `public/index.html`. Connect the repo to Netlify or drag-and-drop the `public/` directory for instant hosting. |
+
+To re-generate the static Netlify dashboard with fresh data:
+```bash
+python scripts/generate_demo_dashboard.py
+```
+
 
 ---
 
@@ -329,12 +349,12 @@ prism/                          ← You are here
 │   ├── scenarios.py            ← 10 test scenarios
 │   └── run_evals.py            ← Runner script
 │
-├── artifacts/                  ← Generated outputs (safe to delete)
-│   ├── traces/                 ← JSONL trace files per run
-│   ├── dashboard.html          ← The interactive dashboard
-│   └── eval_results.json       ← Eval run results
-│
-├── requirements.txt            ← Python dependencies
+├── app.py                      ← 🔮 Interactive Streamlit app with live tracing & chat
+├── .streamlit/config.toml      ← Streamlit dark theme & styling config
+├── public/index.html           ← 🌐 Pre-built static dashboard for Netlify hosting
+├── netlify.toml                ← Netlify deployment configuration
+├── scripts/                    ← Utility scripts (e.g. generate_demo_dashboard.py)
+├── requirements.txt            ← Python dependencies (requests, bs4, rich, streamlit, plotly)
 ├── .gitignore                  ← Git ignore rules
 └── README.md                   ← This file
 ```

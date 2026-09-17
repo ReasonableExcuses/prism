@@ -15,6 +15,14 @@ import sys
 import time
 from pathlib import Path
 
+# Fix Windows console encoding issues for Unicode emojis and box drawing
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
