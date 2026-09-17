@@ -572,7 +572,11 @@ class AnthropicLLM(LLMInterface):
 # Factory — auto-detect from env or CLI flag
 # ---------------------------------------------------------------------------
 
-def create_llm(provider: str | None = None, model: str | None = None) -> LLMInterface:
+def create_llm(
+    provider: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+) -> LLMInterface:
     """
     Create an LLM implementation.
 
@@ -585,13 +589,22 @@ def create_llm(provider: str | None = None, model: str | None = None) -> LLMInte
     provider = provider or os.environ.get("PRISM_LLM_PROVIDER", "").lower()
 
     if provider == "gemini":
-        return GeminiLLM(model=model or "gemini-2.5-flash")
+        return GeminiLLM(model=model or "gemini-2.5-flash", api_key=api_key)
     elif provider == "openai":
-        return OpenAILLM(model=model or "gpt-4o-mini")
+        return OpenAILLM(model=model or "gpt-4o-mini", api_key=api_key)
     elif provider == "anthropic":
-        return AnthropicLLM(model=model or "claude-haiku-3.5")
+        return AnthropicLLM(model=model or "claude-haiku-3.5", api_key=api_key)
     elif provider in ("deterministic", "rule", "stub"):
         return DeterministicLLM()
+
+    # If api_key provided without explicit provider, detect or default
+    if api_key:
+        if api_key.startswith("AIza"):
+            return GeminiLLM(model=model or "gemini-2.5-flash", api_key=api_key)
+        elif api_key.startswith("sk-ant-"):
+            return AnthropicLLM(model=model or "claude-haiku-3.5", api_key=api_key)
+        else:
+            return OpenAILLM(model=model or "gpt-4o-mini", api_key=api_key)
 
     # Auto-detect from available keys
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):

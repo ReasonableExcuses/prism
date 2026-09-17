@@ -12,6 +12,7 @@ Run: streamlit run app.py
 
 import streamlit as st
 import sys
+import os
 import json
 import time
 from pathlib import Path
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prism.trace import Tracer, SpanKind
 from prism.llm import create_llm, DeterministicLLM
 from prism.tools import ToolRegistry
-from prism.context import ContextEngine
+from prism.context import ContextEngine, ContextBudget
 from prism.agent import Agent
 
 # ─────────────────────────────────────────────────────────
@@ -282,7 +283,10 @@ code {
 # ─────────────────────────────────────────────────────────
 if "tracer" not in st.session_state:
     st.session_state.tracer = Tracer(artifacts_dir="artifacts")
-    st.session_state.llm = create_llm()
+    st.session_state.provider = "deterministic"
+    st.session_state.model_name = "deterministic"
+    st.session_state.api_key = ""
+    st.session_state.llm = create_llm("deterministic")
     st.session_state.tools = ToolRegistry(st.session_state.tracer)
     st.session_state.context = ContextEngine(tracer=st.session_state.tracer)
     st.session_state.agent = Agent(
@@ -294,6 +298,9 @@ if "tracer" not in st.session_state:
     st.session_state.messages = []
     st.session_state.responses = []
     st.session_state.fail_mode = False
+    st.session_state.stress_mode = False
+    st.session_state.agent_mode = "🟢 Normal Mode (All Tools Active)"
+    st.session_state.pending_query = None
 
 
 # ─────────────────────────────────────────────────────────
@@ -385,33 +392,156 @@ with st.sidebar:
     st.markdown('<div class="hero-title"><h1>🔮 Prism</h1><p>Glass Box AI Agent</p></div>', unsafe_allow_html=True)
     st.markdown("---")
 
-    # LLM info
-    model_name = st.session_state.llm.model_name
-    st.markdown(f"**Model:** `{model_name}`")
-
-    # Fail mode toggle
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⚠️ Enable Failures" if not st.session_state.fail_mode else "✅ Disable Failures",
-                      use_container_width=True):
-            st.session_state.fail_mode = not st.session_state.fail_mode
-            st.session_state.tools._fail_search = st.session_state.fail_mode
-            st.session_state.tools._fail_url = st.session_state.fail_mode
-            st.rerun()
-    with col2:
-        if st.button("🔄 Reset Session", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
-
+    # ── 1. Execution Mode Selector ──
+    mode_options = [
+        "🟢 Normal Mode (All Tools Active)",
+        "⚠️ Tool Failure Mode (HTTP 503 Fault Injection)",
+        "📦 Context Stress Mode (Tight Token Budget)",
+    ]
+    current_mode_idx = 0
     if st.session_state.fail_mode:
-        st.warning("🔧 Tool failures enabled — search & URL tools will fail. Try a query to see error recovery!", icon="⚠️")
+        current_mode_idx = 1
+    elif st.session_state.stress_mode:
+        current_mode_idx = 2
+
+    chosen_mode = st.selectbox(
+        "🎮 Agent Operating Mode",
+        options=mode_options,
+        index=current_mode_idx,
+        help="Switch between standard agent execution, simulated tool network failures (to prove error recovery), and context budget stress testing."
+    )
+
+    if "Tool Failure" in chosen_mode:
+        st.session_state.fail_mode = True
+        st.session_state.stress_mode = False
+        st.session_state.tools._fail_search = True
+        st.session_state.tools._fail_url = True
+        st.warning("⚠️ Tool failure mode active — search & URL tools will simulate HTTP 503 to demonstrate autonomous error recovery!", icon="⚠️")
+    elif "Context Stress" in chosen_mode:
+        st.session_state.fail_mode = False
+        st.session_state.stress_mode = True
+        st.session_state.tools._fail_search = False
+        st.session_state.tools._fail_url = False
+        st.session_state.context.budget = ContextBudget(
+            system_prompt=150,
+            key_facts=80,
+            rolling_summary=150,
+            recent_turns=300,
+            tool_results=200,
+            response_room=300,
+        )
+        st.info("📦 Context stress mode active — compact 1,180 token budget forces rapid rolling summary & FIFO trimming.", icon="📦")
+    else:
+        st.session_state.fail_mode = False
+        st.session_state.stress_mode = False
+        st.session_state.tools._fail_search = False
+        st.session_state.tools._fail_url = False
+        st.session_state.context.budget = ContextBudget()
+
+    # ── 2. LLM Provider & Model Settings ──
+    with st.expander("⚙️ LLM Provider & Model Settings", expanded=False):
+        provider_display = {
+            "deterministic": "🤖 Deterministic (Offline / Fast)",
+            "gemini": "💎 Google Gemini",
+            "openai": "🧠 OpenAI GPT",
+            "anthropic": "🎭 Anthropic Claude",
+        }
+        provider_keys = list(provider_display.keys())
+        current_p = st.session_state.get("provider", "deterministic")
+        p_index = provider_keys.index(current_p) if current_p in provider_keys else 0
+
+        chosen_provider = st.selectbox(
+            "AI Provider",
+            options=provider_keys,
+            index=p_index,
+            format_func=lambda k: provider_display[k],
+        )
+
+        chosen_model = None
+        user_api_key = None
+
+        if chosen_provider == "gemini":
+            chosen_model = st.selectbox("Gemini Model", ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
+            env_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None)
+            if env_key:
+                st.caption("✅ Key detected from environment/secrets")
+            user_api_key = st.text_input("Gemini API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+        elif chosen_provider == "openai":
+            chosen_model = st.selectbox("OpenAI Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"])
+            env_key = os.environ.get("OPENAI_API_KEY") or (st.secrets.get("OPENAI_API_KEY") if hasattr(st, "secrets") else None)
+            if env_key:
+                st.caption("✅ Key detected from environment/secrets")
+            user_api_key = st.text_input("OpenAI API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+        elif chosen_provider == "anthropic":
+            chosen_model = st.selectbox("Claude Model", ["claude-haiku-3.5", "claude-3-5-sonnet-20241022"])
+            env_key = os.environ.get("ANTHROPIC_API_KEY") or (st.secrets.get("ANTHROPIC_API_KEY") if hasattr(st, "secrets") else None)
+            if env_key:
+                st.caption("✅ Key detected from environment/secrets")
+            user_api_key = st.text_input("Anthropic API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+        else:
+            chosen_model = "deterministic"
+            user_api_key = ""
+
+        # Update LLM if changed
+        if (chosen_provider != st.session_state.get("provider") or
+            chosen_model != st.session_state.get("model_name") or
+            user_api_key != st.session_state.get("api_key")):
+            try:
+                new_llm = create_llm(provider=chosen_provider, model=chosen_model, api_key=user_api_key or None)
+                st.session_state.llm = new_llm
+                st.session_state.provider = chosen_provider
+                st.session_state.model_name = chosen_model
+                st.session_state.api_key = user_api_key
+                st.session_state.agent = Agent(
+                    st.session_state.llm,
+                    st.session_state.tools,
+                    st.session_state.context,
+                    st.session_state.tracer,
+                )
+                st.success(f"Switched to {chosen_provider} ({chosen_model})")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to switch provider: {e}")
+
+    # Active status badge
+    st.markdown(
+        f"<div style='font-size:0.75rem;padding:6px 10px;border-radius:8px;background:rgba(139,92,246,0.12);border:1px solid rgba(139,92,246,0.25);color:#c4b5fd;margin:6px 0 10px 0'>"
+        f"🧠 Active Model: <b>{st.session_state.llm.model_name}</b>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # ── 3. Reset Session Button ──
+    if st.button("🔄 Reset Session & Clear Traces", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+    # ── 4. 1-Click Demo Queries ──
+    with st.expander("⚡ 1-Click Demo Queries", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔍 Search Agent", use_container_width=True):
+                st.session_state.pending_query = "Search for latest developments in AI agent observability."
+                st.rerun()
+            if st.button("💥 Failure Test", use_container_width=True):
+                st.session_state.fail_mode = True
+                st.session_state.tools._fail_search = True
+                st.session_state.pending_query = "Search for quantum computing breakthroughs."
+                st.rerun()
+        with c2:
+            if st.button("🧮 Math Query", use_container_width=True):
+                st.session_state.pending_query = "Calculate (45 * 12) + (180 / 4)"
+                st.rerun()
+            if st.button("📝 Take Note", use_container_width=True):
+                st.session_state.pending_query = "Take note: Epochesque 2.0 Track 1 submission ready."
+                st.rerun()
 
     st.markdown("---")
     st.markdown("**💬 Chat**")
 
     # Message history display
-    chat_container = st.container(height=400)
+    chat_container = st.container(height=380)
     with chat_container:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🔮"):
@@ -419,13 +549,21 @@ with st.sidebar:
                 if "meta" in msg:
                     st.caption(msg["meta"])
 
-    # Chat input
-    if user_input := st.chat_input("Ask me anything..."):
+    # Chat input & pending query execution
+    incoming_query = None
+    if st.session_state.get("pending_query"):
+        incoming_query = st.session_state.pop("pending_query")
+
+    typed_input = st.chat_input("Ask me anything...")
+    if typed_input:
+        incoming_query = typed_input
+
+    if incoming_query:
         # Add user message
-        st.session_state.messages.append({"role": "user", "content": user_input})
+        st.session_state.messages.append({"role": "user", "content": incoming_query})
 
         # Run the agent
-        response = st.session_state.agent.run(user_input)
+        response = st.session_state.agent.run(incoming_query)
         st.session_state.responses.append(response)
 
         # Build meta string
