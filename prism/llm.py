@@ -286,19 +286,25 @@ class DeterministicLLM(LLMInterface):
 # ---------------------------------------------------------------------------
 
 class GeminiLLM(LLMInterface):
-    """Google Gemini via google-generativeai SDK."""
+    """Google Gemini implementation via direct REST API with auto-model resolution."""
 
-    model_name = "gemini-2.5-flash"
+    model_name = "gemini-3.6-flash"
 
-    def __init__(self, model: str = "gemini-2.5-flash", api_key: str | None = None):
-        self.model_name = model
+    # Map deprecated, sunset, or preview model names to active supported ones
+    MODEL_ALIASES = {
+        "gemini-2.5-flash": "gemini-3.6-flash",
+        "gemini-1.5-flash": "gemini-3.6-flash",
+        "gemini-1.5-pro": "gemini-3.6-flash",
+        "gemini-pro": "gemini-3.6-flash",
+        "gemini-flash": "gemini-3.6-flash",
+    }
+
+    def __init__(self, model: str = "gemini-3.6-flash", api_key: str | None = None):
+        mapped = self.MODEL_ALIASES.get(model, model)
+        self.model_name = mapped
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self._api_key:
             raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY must be set")
-
-        import google.generativeai as genai
-        genai.configure(api_key=self._api_key)
-        self._client = genai.GenerativeModel(model)
 
     def run(
         self,
@@ -307,7 +313,7 @@ class GeminiLLM(LLMInterface):
         tools: list[dict] | None,
         tracer: Tracer,
     ) -> LLMResponse:
-        import google.generativeai as genai
+        import requests
 
         with tracer.span(f"llm:{task}", SpanKind.LLM) as span:
             span.set_model(self.model_name)
@@ -321,77 +327,119 @@ class GeminiLLM(LLMInterface):
                 if role == "system":
                     system_text = content
                 elif role == "user":
-                    gemini_messages.append({"role": "user", "parts": [content]})
+                    gemini_messages.append({"role": "user", "parts": [{"text": content}]})
                 elif role == "assistant":
-                    gemini_messages.append({"role": "model", "parts": [content]})
+                    gemini_messages.append({"role": "model", "parts": [{"text": content}]})
                 elif role == "tool":
-                    gemini_messages.append({"role": "user", "parts": [f"[Tool Result]: {content}"]})
+                    gemini_messages.append({"role": "user", "parts": [{"text": f"[Tool Result]: {content}"}]})
 
-            # Build tool declarations for Gemini
+            if not gemini_messages:
+                gemini_messages = [{"role": "user", "parts": [{"text": "Hello"}]}]
+
+            # Merge consecutive turns with the same role (required by Gemini API)
+            merged_messages = []
+            for m in gemini_messages:
+                if merged_messages and merged_messages[-1]["role"] == m["role"]:
+                    merged_messages[-1]["parts"].extend(m["parts"])
+                else:
+                    merged_messages.append(m)
+
+            # Build tools schema
             gemini_tools = None
             if tools:
-                tool_declarations = []
+                declarations = []
                 for t in tools:
                     params = t.get("parameters", {})
-                    declaration = genai.protos.FunctionDeclaration(
-                        name=t["name"],
-                        description=t.get("description", ""),
-                        parameters=genai.protos.Schema(
-                            type=genai.protos.Type.OBJECT,
-                            properties={
-                                k: genai.protos.Schema(
-                                    type=genai.protos.Type.STRING,
-                                    description=v.get("description", ""),
-                                )
+                    declarations.append({
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                k: {
+                                    "type": "STRING",
+                                    "description": v.get("description", ""),
+                                }
                                 for k, v in params.get("properties", {}).items()
                             },
-                            required=params.get("required", []),
-                        ),
+                            "required": params.get("required", []),
+                        },
+                    })
+                gemini_tools = [{"function_declarations": declarations}]
+
+            payload: dict[str, Any] = {"contents": merged_messages}
+            if system_text:
+                payload["system_instruction"] = {"parts": [{"text": system_text}]}
+            if gemini_tools:
+                payload["tools"] = gemini_tools
+
+            # Try requested model with fallback to gemini-3.6-flash if 404
+            models_to_try = [self.model_name]
+            if self.model_name != "gemini-3.6-flash":
+                models_to_try.append("gemini-3.6-flash")
+
+            last_err = None
+            for candidate_model in models_to_try:
+                endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{candidate_model}:generateContent?key={self._api_key}"
+                try:
+                    resp = requests.post(endpoint, json=payload, timeout=35)
+                    if resp.status_code == 404:
+                        last_err = f"Model {candidate_model} returned 404 (not found or deprecated)"
+                        continue
+                    if resp.status_code != 200:
+                        err_text = resp.text[:300]
+                        try:
+                            err_data = resp.json()
+                            err_text = err_data.get("error", {}).get("message", err_text)
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"Gemini API Error ({resp.status_code}): {err_text}")
+
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        raise RuntimeError("Gemini returned no candidates in response")
+
+                    candidate = candidates[0]
+                    content_obj = candidate.get("content", {})
+                    parts = content_obj.get("parts", [])
+
+                    content = ""
+                    tool_calls = []
+                    for part in parts:
+                        if "text" in part and part["text"]:
+                            content += part["text"]
+                        if "functionCall" in part and part["functionCall"]:
+                            fc = part["functionCall"]
+                            tool_calls.append(ToolCall(
+                                name=fc.get("name", ""),
+                                arguments=dict(fc.get("args", {})),
+                            ))
+
+                    usage = data.get("usageMetadata", {})
+                    input_tokens = usage.get("promptTokenCount", self._estimate_tokens(json.dumps(messages)))
+                    output_tokens = usage.get("candidatesTokenCount", self._estimate_tokens(content))
+
+                    span.set_tokens(input_tokens, output_tokens)
+                    span.set_attr("task", task)
+                    span.set_model(candidate_model)
+
+                    return LLMResponse(
+                        content=content,
+                        tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        model=candidate_model,
+                        raw=data,
                     )
-                    tool_declarations.append(declaration)
-                gemini_tools = [genai.protos.Tool(function_declarations=tool_declarations)]
+                except Exception as e:
+                    last_err = str(e)
+                    if "404" not in str(e):
+                        span.set_error(str(e))
+                        raise
 
-            try:
-                model = genai.GenerativeModel(
-                    self.model_name,
-                    system_instruction=system_text if system_text else None,
-                    tools=gemini_tools,
-                )
-                response = model.generate_content(gemini_messages)
-
-                # Parse response
-                content = ""
-                tool_calls = []
-
-                for part in response.parts:
-                    if part.text:
-                        content += part.text
-                    if hasattr(part, 'function_call') and part.function_call:
-                        fc = part.function_call
-                        tool_calls.append(ToolCall(
-                            name=fc.name,
-                            arguments=dict(fc.args),
-                        ))
-
-                # Token counting
-                input_tokens = response.usage_metadata.prompt_token_count if hasattr(response, 'usage_metadata') and response.usage_metadata else self._estimate_tokens(json.dumps(messages))
-                output_tokens = response.usage_metadata.candidates_token_count if hasattr(response, 'usage_metadata') and response.usage_metadata else self._estimate_tokens(content)
-
-                span.set_tokens(input_tokens, output_tokens)
-                span.set_attr("task", task)
-
-                return LLMResponse(
-                    content=content,
-                    tool_calls=tool_calls,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    model=self.model_name,
-                    raw=response,
-                )
-
-            except Exception as e:
-                span.set_error(str(e))
-                raise
+            span.set_error(last_err or "Gemini call failed")
+            raise RuntimeError(last_err or "Gemini call failed")
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +637,7 @@ def create_llm(
     provider = provider or os.environ.get("PRISM_LLM_PROVIDER", "").lower()
 
     if provider == "gemini":
-        return GeminiLLM(model=model or "gemini-2.5-flash", api_key=api_key)
+        return GeminiLLM(model=model or "gemini-3.6-flash", api_key=api_key)
     elif provider == "openai":
         return OpenAILLM(model=model or "gpt-4o-mini", api_key=api_key)
     elif provider == "anthropic":
@@ -599,8 +647,8 @@ def create_llm(
 
     # If api_key provided without explicit provider, detect or default
     if api_key:
-        if api_key.startswith("AIza"):
-            return GeminiLLM(model=model or "gemini-2.5-flash", api_key=api_key)
+        if api_key.startswith("AIza") or api_key.startswith("AQ."):
+            return GeminiLLM(model=model or "gemini-3.6-flash", api_key=api_key)
         elif api_key.startswith("sk-ant-"):
             return AnthropicLLM(model=model or "claude-haiku-3.5", api_key=api_key)
         else:
@@ -608,7 +656,7 @@ def create_llm(
 
     # Auto-detect from available keys
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return GeminiLLM(model=model or "gemini-2.5-flash")
+        return GeminiLLM(model=model or "gemini-3.6-flash")
     if os.environ.get("OPENAI_API_KEY"):
         return OpenAILLM(model=model or "gpt-4o-mini")
     if os.environ.get("ANTHROPIC_API_KEY"):

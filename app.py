@@ -461,7 +461,7 @@ with st.sidebar:
         user_api_key = None
 
         if chosen_provider == "gemini":
-            chosen_model = st.selectbox("Gemini Model", ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
+            chosen_model = st.selectbox("Gemini Model", ["gemini-3.6-flash", "gemini-flash-latest", "gemini-3.8-flash", "gemini-pro-latest"])
             env_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
@@ -562,27 +562,34 @@ with st.sidebar:
         # Add user message
         st.session_state.messages.append({"role": "user", "content": incoming_query})
 
-        # Run the agent
-        response = st.session_state.agent.run(incoming_query)
-        st.session_state.responses.append(response)
+        try:
+            # Run the agent
+            with st.spinner("🔮 Agent planning and executing tools..."):
+                response = st.session_state.agent.run(incoming_query)
+            st.session_state.responses.append(response)
 
-        # Build meta string
-        tool_steps = [s for s in response.steps if s.action == "tool_call"]
-        error_steps = [s for s in response.steps if s.action == "error_recovery"]
-        meta_parts = [f"{response.total_steps} steps"]
-        if tool_steps:
-            meta_parts.append(f"tools: {', '.join(s.tool_name for s in tool_steps if s.tool_name)}")
-        if error_steps:
-            meta_parts.append(f"⚠️ {len(error_steps)} error(s) recovered")
-        meta_parts.append(f"{response.tokens_used:,} tok")
-        meta_parts.append(f"${response.cost_usd:.6f}")
-        meta_parts.append(f"{response.duration_ms:.0f}ms")
+            # Build meta string
+            tool_steps = [s for s in response.steps if s.action == "tool_call"]
+            error_steps = [s for s in response.steps if s.action == "error_recovery"]
+            meta_parts = [f"{response.total_steps} steps"]
+            if tool_steps:
+                meta_parts.append(f"tools: {', '.join(s.tool_name for s in tool_steps if s.tool_name)}")
+            if error_steps:
+                meta_parts.append(f"⚠️ {len(error_steps)} error(s) recovered")
+            meta_parts.append(f"{response.tokens_used:,} tok")
+            meta_parts.append(f"${response.cost_usd:.6f}")
+            meta_parts.append(f"{response.duration_ms:.0f}ms")
 
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": response.content,
-            "meta": " · ".join(meta_parts),
-        })
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response.content,
+                "meta": " · ".join(meta_parts),
+            })
+        except Exception as e:
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": f"⚠️ **Execution Notice**: `{e}`\n\n*Note: Free-tier Gemini keys have rate limits (e.g. 5 requests/min). You can wait ~30s or switch back to `Deterministic` mode in the sidebar for unlimited, instant offline execution.*",
+            })
         st.rerun()
 
     st.markdown("---")
