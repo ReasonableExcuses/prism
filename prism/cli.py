@@ -157,9 +157,9 @@ def _print_help() -> None:
 def main():
     parser = argparse.ArgumentParser(description="🔮 Prism — The Glass Box AI Research Agent")
     parser.add_argument("--llm", type=str, default=None,
-                        help="LLM provider: gemini, openai, anthropic, deterministic")
+                        help="LLM provider: groq, openrouter, gemini, openai, anthropic, deterministic")
     parser.add_argument("--model", type=str, default=None,
-                        help="Specific model name (e.g., gpt-4o, gemini-2.5-flash)")
+                        help="Specific model name (e.g., llama-3.3-70b-versatile, gemini-3.6-flash, gpt-4o-mini)")
     parser.add_argument("--fail-search", action="store_true",
                         help="Start with search tool deliberately failing")
     parser.add_argument("--fail-url", action="store_true",

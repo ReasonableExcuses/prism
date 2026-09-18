@@ -382,7 +382,7 @@ class GeminiLLM(LLMInterface):
             for candidate_model in models_to_try:
                 endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{candidate_model}:generateContent?key={self._api_key}"
                 try:
-                    resp = requests.post(endpoint, json=payload, timeout=35)
+                    resp = requests.post(endpoint, json=payload, timeout=50)
                     if resp.status_code == 404:
                         last_err = f"Model {candidate_model} returned 404 (not found or deprecated)"
                         continue
@@ -432,6 +432,14 @@ class GeminiLLM(LLMInterface):
                         model=candidate_model,
                         raw=data,
                     )
+                except requests.exceptions.ReadTimeout:
+                    timeout_msg = (
+                        f"Google Gemini ReadTimeout (>50s on {candidate_model}). "
+                        "Google's free-tier endpoint is experiencing severe regional latency or traffic queuing. "
+                        "Recommendation: Switch to Groq (Free & Ultra Fast Llama 3.3 70B @ 500+ tok/s) or Deterministic mode in the sidebar."
+                    )
+                    span.set_error(timeout_msg)
+                    raise RuntimeError(timeout_msg)
                 except Exception as e:
                     last_err = str(e)
                     if "404" not in str(e):
@@ -443,22 +451,31 @@ class GeminiLLM(LLMInterface):
 
 
 # ---------------------------------------------------------------------------
-# OpenAILLM — OpenAI GPT
+# OpenAICompatibleLLM — Generic REST client (OpenAI, Groq, OpenRouter, etc.)
 # ---------------------------------------------------------------------------
 
-class OpenAILLM(LLMInterface):
-    """OpenAI GPT via the openai SDK."""
+class OpenAICompatibleLLM(LLMInterface):
+    """
+    Direct REST client for any OpenAI-compatible chat completion endpoint.
+    Zero dependency beyond requests.
+    """
 
-    model_name = "gpt-4o-mini"
-
-    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None):
+    def __init__(
+        self,
+        model: str = "gpt-4o-mini",
+        api_key: str | None = None,
+        base_url: str = "https://api.openai.com/v1",
+        provider_name: str = "OpenAI",
+        env_key_name: str = "OPENAI_API_KEY",
+        extra_headers: dict[str, str] | None = None,
+    ):
         self.model_name = model
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.base_url = base_url.rstrip("/")
+        self.provider_name = provider_name
+        self.extra_headers = extra_headers or {}
+        self._api_key = api_key or os.environ.get(env_key_name) or os.environ.get("OPENAI_API_KEY")
         if not self._api_key:
-            raise ValueError("OPENAI_API_KEY must be set")
-
-        from openai import OpenAI
-        self._client = OpenAI(api_key=self._api_key)
+            raise ValueError(f"{env_key_name} must be set")
 
     def run(
         self,
@@ -467,10 +484,11 @@ class OpenAILLM(LLMInterface):
         tools: list[dict] | None,
         tracer: Tracer,
     ) -> LLMResponse:
+        import requests
+
         with tracer.span(f"llm:{task}", SpanKind.LLM) as span:
             span.set_model(self.model_name)
 
-            # Build OpenAI tools format
             oai_tools = None
             if tools:
                 oai_tools = []
@@ -484,27 +502,55 @@ class OpenAILLM(LLMInterface):
                         }
                     })
 
-            try:
-                response = self._client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    tools=oai_tools,
-                    temperature=0.2,
-                )
+            payload: dict[str, Any] = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": 0.2,
+            }
+            if oai_tools:
+                payload["tools"] = oai_tools
 
-                choice = response.choices[0]
-                content = choice.message.content or ""
+            headers = {
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+                **self.extra_headers,
+            }
+
+            endpoint = f"{self.base_url}/chat/completions"
+            try:
+                resp = requests.post(endpoint, json=payload, headers=headers, timeout=40)
+                if resp.status_code != 200:
+                    err_text = resp.text[:300]
+                    try:
+                        err_json = resp.json()
+                        err_text = err_json.get("error", {}).get("message", err_text)
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"{self.provider_name} API Error ({resp.status_code}): {err_text}")
+
+                data = resp.json()
+                choice = data["choices"][0]
+                message = choice.get("message", {})
+                content = message.get("content") or ""
                 tool_calls = []
 
-                if choice.message.tool_calls:
-                    for tc in choice.message.tool_calls:
+                if message.get("tool_calls"):
+                    for tc in message["tool_calls"]:
+                        fn = tc.get("function", {})
+                        args = fn.get("arguments", "{}")
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                args = {}
                         tool_calls.append(ToolCall(
-                            name=tc.function.name,
-                            arguments=json.loads(tc.function.arguments),
+                            name=fn.get("name", ""),
+                            arguments=args,
                         ))
 
-                input_tokens = response.usage.prompt_tokens if response.usage else 0
-                output_tokens = response.usage.completion_tokens if response.usage else 0
+                usage = data.get("usage", {})
+                input_tokens = usage.get("prompt_tokens", self._estimate_tokens(json.dumps(messages)))
+                output_tokens = usage.get("completion_tokens", self._estimate_tokens(content))
 
                 span.set_tokens(input_tokens, output_tokens)
                 span.set_attr("task", task)
@@ -515,12 +561,72 @@ class OpenAILLM(LLMInterface):
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     model=self.model_name,
-                    raw=response,
+                    raw=data,
                 )
-
             except Exception as e:
                 span.set_error(str(e))
                 raise
+
+
+# ---------------------------------------------------------------------------
+# OpenAILLM — OpenAI GPT
+# ---------------------------------------------------------------------------
+
+class OpenAILLM(OpenAICompatibleLLM):
+    """OpenAI GPT models (gpt-4o-mini, gpt-4o, etc.)."""
+
+    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None):
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url="https://api.openai.com/v1",
+            provider_name="OpenAI",
+            env_key_name="OPENAI_API_KEY",
+        )
+
+
+# ---------------------------------------------------------------------------
+# GroqLLM — Ultra-fast Free Tier (Llama 3.3 70B & 3.1 8B @ 500+ tok/s)
+# ---------------------------------------------------------------------------
+
+class GroqLLM(OpenAICompatibleLLM):
+    """
+    Groq ultra-fast inference with generous free tier.
+    Free keys available in 1-click at https://console.groq.com/keys
+    """
+
+    def __init__(self, model: str = "llama-3.3-70b-versatile", api_key: str | None = None):
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            provider_name="Groq",
+            env_key_name="GROQ_API_KEY",
+        )
+
+
+# ---------------------------------------------------------------------------
+# OpenRouterLLM — Free Tier Open-Source Models
+# ---------------------------------------------------------------------------
+
+class OpenRouterLLM(OpenAICompatibleLLM):
+    """
+    OpenRouter gateway supporting free community models.
+    Keys available at https://openrouter.ai/keys
+    """
+
+    def __init__(self, model: str = "meta-llama/llama-3.3-70b-instruct:free", api_key: str | None = None):
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            provider_name="OpenRouter",
+            env_key_name="OPENROUTER_API_KEY",
+            extra_headers={
+                "HTTP-Referer": "https://prisms.streamlit.app",
+                "X-Title": "Prism Glass Box Agent",
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +742,11 @@ def create_llm(
     """
     provider = provider or os.environ.get("PRISM_LLM_PROVIDER", "").lower()
 
-    if provider == "gemini":
+    if provider == "groq":
+        return GroqLLM(model=model or "llama-3.3-70b-versatile", api_key=api_key)
+    elif provider == "openrouter":
+        return OpenRouterLLM(model=model or "meta-llama/llama-3.3-70b-instruct:free", api_key=api_key)
+    elif provider == "gemini":
         return GeminiLLM(model=model or "gemini-3.6-flash", api_key=api_key)
     elif provider == "openai":
         return OpenAILLM(model=model or "gpt-4o-mini", api_key=api_key)
@@ -645,16 +755,24 @@ def create_llm(
     elif provider in ("deterministic", "rule", "stub"):
         return DeterministicLLM()
 
-    # If api_key provided without explicit provider, detect or default
+    # If api_key provided without explicit provider, detect by format:
     if api_key:
-        if api_key.startswith("AIza") or api_key.startswith("AQ."):
+        if api_key.startswith("gsk_"):
+            return GroqLLM(model=model or "llama-3.3-70b-versatile", api_key=api_key)
+        elif api_key.startswith("sk-or-"):
+            return OpenRouterLLM(model=model or "meta-llama/llama-3.3-70b-instruct:free", api_key=api_key)
+        elif api_key.startswith("AIza") or api_key.startswith("AQ."):
             return GeminiLLM(model=model or "gemini-3.6-flash", api_key=api_key)
         elif api_key.startswith("sk-ant-"):
             return AnthropicLLM(model=model or "claude-haiku-3.5", api_key=api_key)
         else:
             return OpenAILLM(model=model or "gpt-4o-mini", api_key=api_key)
 
-    # Auto-detect from available keys
+    # Auto-detect from available environment variables
+    if os.environ.get("GROQ_API_KEY"):
+        return GroqLLM(model=model or "llama-3.3-70b-versatile")
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return OpenRouterLLM(model=model or "meta-llama/llama-3.3-70b-instruct:free")
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return GeminiLLM(model=model or "gemini-3.6-flash")
     if os.environ.get("OPENAI_API_KEY"):

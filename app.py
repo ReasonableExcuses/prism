@@ -441,9 +441,11 @@ with st.sidebar:
     # ── 2. LLM Provider & Model Settings ──
     with st.expander("⚙️ LLM Provider & Model Settings", expanded=False):
         provider_display = {
-            "deterministic": "🤖 Deterministic (Offline / Fast)",
-            "gemini": "💎 Google Gemini",
-            "openai": "🧠 OpenAI GPT",
+            "deterministic": "🤖 Deterministic (Offline / Mock / Zero-Key)",
+            "groq": "⚡ Groq (Free Tier · Ultra Fast Llama 3.3 70B)",
+            "gemini": "💎 Google Gemini (gemini-3.6-flash)",
+            "openrouter": "🌐 OpenRouter (Free Community Models)",
+            "openai": "🧠 OpenAI GPT (gpt-4o-mini / gpt-4o)",
             "anthropic": "🎭 Anthropic Claude",
         }
         provider_keys = list(provider_display.keys())
@@ -460,11 +462,26 @@ with st.sidebar:
         chosen_model = None
         user_api_key = None
 
-        if chosen_provider == "gemini":
+        if chosen_provider == "groq":
+            chosen_model = st.selectbox("Groq Model", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"])
+            env_key = os.environ.get("GROQ_API_KEY") or (st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None)
+            if env_key:
+                st.caption("✅ Key detected from environment/secrets")
+            st.caption("🔑 Free key in 30 seconds (no credit card): [console.groq.com/keys](https://console.groq.com/keys)")
+            user_api_key = st.text_input("Groq API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+        elif chosen_provider == "openrouter":
+            chosen_model = st.selectbox("OpenRouter Model", ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free", "qwen/qwen-2.5-72b-instruct:free"])
+            env_key = os.environ.get("OPENROUTER_API_KEY") or (st.secrets.get("OPENROUTER_API_KEY") if hasattr(st, "secrets") else None)
+            if env_key:
+                st.caption("✅ Key detected from environment/secrets")
+            st.caption("🔑 Get OpenRouter key: [openrouter.ai/keys](https://openrouter.ai/keys)")
+            user_api_key = st.text_input("OpenRouter API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+        elif chosen_provider == "gemini":
             chosen_model = st.selectbox("Gemini Model", ["gemini-3.6-flash", "gemini-flash-latest", "gemini-3.8-flash", "gemini-pro-latest"])
             env_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
+            st.caption("🔑 Free Google key: [aistudio.google.com](https://aistudio.google.com)")
             user_api_key = st.text_input("Gemini API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
         elif chosen_provider == "openai":
             chosen_model = st.selectbox("OpenAI Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"])
