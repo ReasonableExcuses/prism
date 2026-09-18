@@ -517,18 +517,33 @@ class OpenAICompatibleLLM(LLMInterface):
             }
 
             endpoint = f"{self.base_url}/chat/completions"
-            try:
-                resp = requests.post(endpoint, json=payload, headers=headers, timeout=40)
-                if resp.status_code != 200:
-                    err_text = resp.text[:300]
-                    try:
-                        err_json = resp.json()
-                        err_text = err_json.get("error", {}).get("message", err_text)
-                    except Exception:
-                        pass
-                    raise RuntimeError(f"{self.provider_name} API Error ({resp.status_code}): {err_text}")
+            fallback_models = [self.model_name]
+            if self.provider_name == "Groq":
+                for fb in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "groq/compound", "meta-llama/llama-4-scout-17b-16e-instruct"]:
+                    if fb not in fallback_models:
+                        fallback_models.append(fb)
 
-                data = resp.json()
+            data = None
+            try:
+                for idx, candidate_m in enumerate(fallback_models):
+                    payload["model"] = candidate_m
+                    resp = requests.post(endpoint, json=payload, headers=headers, timeout=40)
+                    if resp.status_code in (400, 404) and idx < len(fallback_models) - 1:
+                        # Model decommissioned or not accessible; try next active candidate
+                        continue
+                    if resp.status_code != 200:
+                        err_text = resp.text[:300]
+                        try:
+                            err_json = resp.json()
+                            err_text = err_json.get("error", {}).get("message", err_text)
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"{self.provider_name} API Error ({resp.status_code}): {err_text}")
+
+                    data = resp.json()
+                    self.model_name = candidate_m
+                    span.set_model(candidate_m)
+                    break
                 choice = data["choices"][0]
                 message = choice.get("message", {})
                 content = message.get("content") or ""
@@ -595,7 +610,7 @@ class GroqLLM(OpenAICompatibleLLM):
     Free keys available in 1-click at https://console.groq.com/keys
     """
 
-    def __init__(self, model: str = "llama-3.3-70b-versatile", api_key: str | None = None):
+    def __init__(self, model: str = "openai/gpt-oss-120b", api_key: str | None = None):
         super().__init__(
             model=model,
             api_key=api_key,
@@ -743,7 +758,7 @@ def create_llm(
     provider = provider or os.environ.get("PRISM_LLM_PROVIDER", "").lower()
 
     if provider == "groq":
-        return GroqLLM(model=model or "llama-3.3-70b-versatile", api_key=api_key)
+        return GroqLLM(model=model or "openai/gpt-oss-120b", api_key=api_key)
     elif provider == "openrouter":
         return OpenRouterLLM(model=model or "meta-llama/llama-3.3-70b-instruct:free", api_key=api_key)
     elif provider == "gemini":
@@ -758,7 +773,7 @@ def create_llm(
     # If api_key provided without explicit provider, detect by format:
     if api_key:
         if api_key.startswith("gsk_"):
-            return GroqLLM(model=model or "llama-3.3-70b-versatile", api_key=api_key)
+            return GroqLLM(model=model or "openai/gpt-oss-120b", api_key=api_key)
         elif api_key.startswith("sk-or-"):
             return OpenRouterLLM(model=model or "meta-llama/llama-3.3-70b-instruct:free", api_key=api_key)
         elif api_key.startswith("AIza") or api_key.startswith("AQ."):
@@ -770,7 +785,7 @@ def create_llm(
 
     # Auto-detect from available environment variables
     if os.environ.get("GROQ_API_KEY"):
-        return GroqLLM(model=model or "llama-3.3-70b-versatile")
+        return GroqLLM(model=model or "openai/gpt-oss-120b")
     if os.environ.get("OPENROUTER_API_KEY"):
         return OpenRouterLLM(model=model or "meta-llama/llama-3.3-70b-instruct:free")
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):

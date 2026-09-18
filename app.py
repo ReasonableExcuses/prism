@@ -463,14 +463,22 @@ with st.sidebar:
         user_api_key = None
 
         if chosen_provider == "groq":
-            groq_models = [
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "qwen-2.5-32b",
-                "deepseek-r1-distill-llama-70b",
-                "gemma2-9b-it",
+            default_groq = [
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
+                "groq/compound",
+                "meta-llama/llama-4-scout-17b-16e-instruct",
+                "Custom (enter below)",
             ]
-            chosen_model = st.selectbox("Groq Model", groq_models)
+            detected = st.session_state.get("groq_detected_models", [])
+            groq_models = detected if detected else default_groq
+
+            selected_option = st.selectbox("Groq Model", groq_models)
+            if selected_option == "Custom (enter below)":
+                chosen_model = st.text_input("Enter Groq Model ID", value="openai/gpt-oss-120b")
+            else:
+                chosen_model = selected_option
+
             env_key = os.environ.get("GROQ_API_KEY") or (st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
@@ -484,7 +492,30 @@ with st.sidebar:
             if user_api_key:
                 st.session_state["api_key_groq"] = user_api_key
                 if not user_api_key.startswith("gsk_"):
-                    st.warning("⚠️ Warning: Groq API keys start with **gsk_**. It looks like you pasted a key from another provider (e.g. Gemini or OpenAI), which Groq will reject with a 404/401 error.")
+                    st.warning("⚠️ Warning: Groq API keys start with **gsk_**. It looks like you pasted a key from another provider (e.g. Gemini or OpenAI).")
+                else:
+                    if st.button("🔍 Test Key & List My Accessible Groq Models", key="btn_test_groq"):
+                        with st.spinner("Connecting to Groq API..."):
+                            try:
+                                import requests
+                                r = requests.get(
+                                    "https://api.groq.com/openai/v1/models",
+                                    headers={"Authorization": f"Bearer {user_api_key}"},
+                                    timeout=6,
+                                )
+                                if r.status_code == 200:
+                                    m_data = r.json().get("data", [])
+                                    valid_ids = [m["id"] for m in m_data if not m.get("id", "").startswith("whisper")]
+                                    if valid_ids:
+                                        st.session_state["groq_detected_models"] = sorted(valid_ids)
+                                        st.success(f"✅ Key Verified! {len(valid_ids)} active models loaded into dropdown.")
+                                        st.rerun()
+                                    else:
+                                        st.info("Key verified, but no chat models returned.")
+                                else:
+                                    st.error(f"❌ Groq API rejected key ({r.status_code}): {r.text[:200]}")
+                            except Exception as ex:
+                                st.error(f"❌ Connection error: {ex}")
             else:
                 st.info("💡 Enter your free Groq API key above, or switch to **Deterministic** mode below for instant zero-key testing.")
 
@@ -699,7 +730,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(
         "<div style='font-size:0.7rem;color:#52525b;text-align:center'>"
-        "Built for Epochesque 2.0 — Track 1<br/>Team ReasonableExcuses"
+        "Built for Epochesque 2.0 — Track 1<br/>Team Imagine Losing"
         "</div>",
         unsafe_allow_html=True
     )
@@ -917,7 +948,7 @@ st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 st.markdown(
     f"<div style='text-align:center;color:#3f3f46;font-size:0.75rem;padding:0.5rem'>"
     f"🔮 Prism · Run {summary['run_id']} · {summary['span_count']} spans · "
-    f"Epochesque 2.0 Track 1 · Team ReasonableExcuses"
+    f"Epochesque 2.0 Track 1 · Team Imagine Losing"
     f"</div>",
     unsafe_allow_html=True,
 )

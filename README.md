@@ -148,7 +148,7 @@ Prism features a provider-agnostic LLM interface built with **direct zero-depend
 
 | Provider | Default Model | Speed | Cost | Ideal Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| **Groq** *(Recommended Free Tier)* | `llama-3.3-70b-versatile` | **500+ tok/s** | **Free Tier** (14,400 req/day) | Ultra-fast live agent demonstrations, low latency, no credit card required. |
+| **Groq** *(Recommended Free Tier)* | `openai/gpt-oss-120b` / `compound` | **500+ tok/s** | **Free Tier** (14,400 req/day) | Ultra-fast live agent demonstrations, low latency, no credit card required. |
 | **OpenRouter** *(Free Tier)* | `meta-llama/llama-3.3-70b-instruct:free` | ~40-70 tok/s | **100% Free** | Open-source ecosystem, exploration, community models. |
 | **Google Gemini** | `gemini-3.6-flash` | ~90 tok/s | Free Tier / PayG | Multimodal reasoning, deep context exploration. |
 | **OpenAI** | `gpt-4o-mini`, `gpt-4o` | ~80 tok/s | Pay-as-you-go | Standard enterprise production deployments. |
@@ -380,7 +380,7 @@ prism/
 
 ## 👥 Team & Acknowledgments
 
-Built with precision for **Epochesque 2.0** by **Team ReasonableExcuses**.
+Built with precision for **Epochesque 2.0** by **Team Imagine Losing**.
 
 - **Live Streamlit App**: [https://prisms.streamlit.app/](https://prisms.streamlit.app/)
 - **GitHub Repository**: [https://github.com/ReasonableExcuses/prism](https://github.com/ReasonableExcuses/prism)
