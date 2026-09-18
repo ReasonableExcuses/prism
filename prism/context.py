@@ -66,6 +66,8 @@ class Turn:
     tokens: int = 0     # estimated
 
     def to_message(self) -> dict[str, str]:
+        if self.role == "tool":
+            return {"role": "user", "content": f"[Tool Result from {self.tool_name or 'tool'}]:\n{self.content}"}
         return {"role": self.role, "content": self.content}
 
 

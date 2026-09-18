@@ -502,9 +502,19 @@ class OpenAICompatibleLLM(LLMInterface):
                         }
                     })
 
+            clean_messages = []
+            for m in messages:
+                if m.get("role") == "tool" and not m.get("tool_call_id"):
+                    clean_messages.append({
+                        "role": "user",
+                        "content": f"[Tool Result]:\n{m.get('content', '')}"
+                    })
+                else:
+                    clean_messages.append(m)
+
             payload: dict[str, Any] = {
                 "model": self.model_name,
-                "messages": messages,
+                "messages": clean_messages,
                 "temperature": 0.2,
             }
             if oai_tools:

@@ -192,12 +192,9 @@ class Agent:
                             "content": f"I'll use {tc.name} to help answer this."
                         })
                         messages.append({
-                            "role": "tool" if "tool" in [m.get("role") for m in messages[:1]] or True else "user",
+                            "role": "user",
                             "content": f"[Tool Result from {tc.name}]:\n{result_msg}"
                         })
-                        # For compatibility, use "user" role for tool results
-                        # since not all providers support "tool" role without tool_call_id
-                        messages[-1]["role"] = "user"
 
                         # Record the tool result in context
                         self.context.add_turn("tool", result_msg[:500], tool_name=tc.name)
