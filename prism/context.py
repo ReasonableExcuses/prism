@@ -103,11 +103,13 @@ class ContextEngine:
 
     SYSTEM_PROMPT = """You are Prism, an AI research assistant with full observability.
 
-You have access to tools: web_search, read_url, calculate, analyze_data, take_note.
+You have access to tools: web_search, read_url, calculate, analyze_data, take_note, get_weather, wikipedia_summary, datetime_info.
 
 RULES:
-- When asked a factual question, use web_search or read_url to find the answer. Do NOT make up facts.
+- When asked a factual question, use web_search, wikipedia_summary, or read_url to find the answer. Do NOT make up facts.
 - When asked to do math, use the calculate tool. Do NOT compute in your head.
+- When asked about weather, use the get_weather tool.
+- When asked about time, dates, or timezones, use the datetime_info tool.
 - When you find important information, use take_note to save it.
 - Always cite which tool/source gave you the answer.
 - If a tool fails, explain what happened and try an alternative approach.
@@ -362,6 +364,73 @@ IMPORTANT: You MUST use tools for research. Do not answer from memory alone."""
             span.set_attr("turns_summarized", len(old_turns))
             span.set_attr("summary_length", len(self._rolling_summary))
             span.set_attr("summary_preview", self._rolling_summary[:200])
+
+    # -----------------------------------------------------------------------
+    # Emergency context compression (for token overflow recovery)
+    # -----------------------------------------------------------------------
+
+    def force_compress(self, tracer: Tracer | None = None) -> None:
+        """
+        Aggressively compress context when the LLM reports token overflow.
+
+        Strategy:
+          1. Summarize ALL current turns into the rolling summary
+          2. Halve the window size (min 2)
+          3. Keep only the most recent 2 turns
+          4. Trim the rolling summary to budget
+
+        Fully traced so the dashboard shows the compression event.
+        """
+        t = tracer or self._tracer
+
+        def _do_compress():
+            # Summarize everything into rolling summary
+            if self._turns:
+                user_msgs = [t.content[:80] for t in self._turns if t.role == "user"]
+                asst_msgs = [t.content[:80] for t in self._turns if t.role == "assistant"]
+                tool_msgs = [f"{t.tool_name}: {t.content[:60]}" for t in self._turns if t.role == "tool"]
+
+                parts = []
+                if user_msgs:
+                    parts.append(f"User asked: {'; '.join(user_msgs[-3:])}")
+                if asst_msgs:
+                    parts.append(f"Assistant answered: {'; '.join(asst_msgs[-2:])}")
+                if tool_msgs:
+                    parts.append(f"Tools used: {'; '.join(tool_msgs[-3:])}")
+
+                new_summary = ". ".join(parts)
+                if self._rolling_summary:
+                    self._rolling_summary = f"{self._rolling_summary}\n{new_summary}"
+                else:
+                    self._rolling_summary = new_summary
+
+            # Trim rolling summary to budget
+            max_chars = self.budget.rolling_summary * 4
+            if len(self._rolling_summary) > max_chars:
+                self._rolling_summary = self._rolling_summary[-max_chars:]
+
+            # Keep only the most recent 2 turns
+            if len(self._turns) > 2:
+                self._turns = self._turns[-2:]
+
+            # Halve window size (min 2)
+            self.window_size = max(2, self.window_size // 2)
+
+        if t:
+            with t.span("force_compress", SpanKind.CONTEXT) as span:
+                old_turns = len(self._turns)
+                old_window = self.window_size
+                _do_compress()
+                span.set_attr("turns_before", old_turns)
+                span.set_attr("turns_after", len(self._turns))
+                span.set_attr("window_before", old_window)
+                span.set_attr("window_after", self.window_size)
+                span.set_attr("summary_length", len(self._rolling_summary))
+                span.add_event("context_compressed",
+                               reason="token_overflow",
+                               turns_dropped=old_turns - len(self._turns))
+        else:
+            _do_compress()
 
     # -----------------------------------------------------------------------
     # Utilities

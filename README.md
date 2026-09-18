@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Epochesque%202.0-Track%201%3A%20The%20Glass%20Box%20Problem-7928CA?style=for-the-badge&logo=target" alt="Epochesque 2.0 Track 1" />
   <a href="https://prisms.streamlit.app/"><img src="https://img.shields.io/badge/Live%20Demo-Streamlit%20Cloud-FF4B4B?style=for-the-badge&logo=streamlit" alt="Streamlit Cloud Live App" /></a>
-  <img src="https://img.shields.io/badge/Eval%20Suite-10%2F10%20Passed%20(67%2F67)-00C853?style=for-the-badge&logo=checkmarx" alt="Eval Suite 100% Passed" />
+  <img src="https://img.shields.io/badge/Eval%20Suite-12%2F12%20Passed%20(82%2F82)-00C853?style=for-the-badge&logo=checkmarx" alt="Eval Suite 100% Passed" />
 </p>
 
 <p align="center">
@@ -79,7 +79,7 @@ Modern AI systems are plagued by opacity: when an agent pipeline fails, halts in
 | **Context Window Control** | Blind naive concatenation leading to sudden context overflows | **3-Tier Token Budget: sliding window + rolling summary + immutable key facts** |
 | **Failure Recovery** | Aborts process or crashes unhandled | **Structured `ToolResult` schemas with error hints and multi-step self-correction** |
 | **Financial Accounting** | Approximate post-hoc estimations | **Exact per-span input/output token metering & dollar pricing down to $0.000001** |
-| **Reproducibility** | Flaky stochastic evaluations dependent on live network & rate limits | **100% offline, deterministic evaluation suite (10 scenarios, 67 assertions)** |
+| **Reproducibility** | Flaky stochastic evaluations dependent on live network & rate limits | **100% offline, deterministic evaluation suite (12 scenarios, 82 assertions)** |
 | **Framework Overhead** | Hundreds of convoluted wrapper abstractions | **Native Python 3.10+ standard library + lightweight REST requests** |
 
 ---
@@ -164,7 +164,7 @@ Prism features a provider-agnostic LLM interface built with **direct zero-depend
 
 ## 🛠️ Tool Registry & Failure Recovery Arc
 
-Prism equips the agent with 5 native tools. Unlike naive agent systems that pass unvalidated strings, every Prism tool returns a strictly typed `ToolResult`:
+Prism equips the agent with 8 native tools. Unlike naive agent systems that pass unvalidated strings, every Prism tool returns a strictly typed `ToolResult`:
 
 ```python
 @dataclass
@@ -177,11 +177,14 @@ class ToolResult:
 
 ### Available Tools
 
-1. **`web_search`**: DuckDuckGo instant answer search with structured snippets.
+1. **`web_search`**: DuckDuckGo instant answer search with structured snippets (no API key).
 2. **`read_url`**: HTML content extraction and semantic text parsing.
 3. **`calculate`**: Sandboxed AST-evaluated mathematical calculation engine.
 4. **`analyze_data`**: Statistical summarization, numeric aggregation, and distribution profiling.
 5. **`take_note`**: Persistent session scratchpad for multi-step research synthesis.
+6. **`get_weather`**: Real-time weather, temperature, humidity, and wind via Open-Meteo API (free, zero-key).
+7. **`wikipedia_summary`**: Verified encyclopedic summaries and article overviews via Wikipedia REST API.
+8. **`datetime_info`**: Timezone-aware clock, UTC timestamps, and forward/backward date interval math.
 
 ### The Failure Recovery Arc (Rule Compliance)
 
@@ -204,6 +207,12 @@ sequenceDiagram
     LLM-->>A: Self-corrects: Selects fallback tool or answers gracefully
     A->>T: span.end("agent_run: SUCCESS_WITH_RECOVERY")
 ```
+
+#### Token Limit Fallback & Overflow Recovery
+When an LLM provider returns an HTTP 400/413 error indicating context length overflow, Prism doesn't crash:
+1. `GeminiLLM` and `OpenAICompatibleLLM` detect the overflow and raise `TokenOverflowError`.
+2. The agent loop catches `TokenOverflowError` and triggers `context.force_compress()`, immediately halving window size and distilling old turns into a compact rolling summary.
+3. The agent retries up to 2 times, recording each recovery step as an observable `error_recovery` span.
 
 ---
 
@@ -333,7 +342,9 @@ Prism is backed by a deterministic evaluation harness that validates every syste
 | `s08` | `cost_tracking` | Cumulative financial metering and token aggregation | 4 / 4 | ✅ PASS |
 | `s09` | `multi_tool` | Dynamic routing between search, calculation, and analysis | 3 / 3 | ✅ PASS |
 | `s10` | `dashboard_gen` | HTML dashboard generation with all 7 analytical panels | 9 / 9 | ✅ PASS |
-| **Total** | **Full Benchmark** | **End-to-End System Reliability** | **67 / 67** | **100% PASS** |
+| `s11` | `new_tools` | Verification of weather, Wikipedia, and datetime tools | 9 / 9 | ✅ PASS |
+| `s12` | `token_overflow_fallback` | Autonomous context compression & retry on token limit errors | 6 / 6 | ✅ PASS |
+| **Total** | **Full Benchmark** | **End-to-End System Reliability** | **82 / 82** | **100% PASS** |
 
 *Benchmark execution time: **~8.1 seconds** on standard hardware.*
 
@@ -348,15 +359,15 @@ prism/
 │   ├── __init__.py             # Package exports & public API
 │   ├── trace.py                # 🔍 Span-level tracing engine & OpenTelemetry schemas
 │   ├── llm.py                  # 🧠 Universal LLM client (Groq, OpenRouter, Gemini, OpenAI, Claude)
-│   ├── tools.py                # 🔧 5 native tools with structured ToolResult & error hints
-│   ├── context.py              # 📦 3-tier dynamic context budget manager
-│   ├── agent.py                # 🤖 Autonomous Plan-Act-Observe cognitive cycle
+│   ├── tools.py                # 🔧 8 native tools with structured ToolResult & error hints
+│   ├── context.py              # 📦 3-tier dynamic context budget manager with force_compress
+│   ├── agent.py                # 🤖 Autonomous Plan-Act-Observe cognitive cycle with overflow retry
 │   ├── cli.py                  # 💻 Interactive REPL with in-terminal observability
 │   └── dashboard.py            # 📊 Self-contained interactive HTML dashboard generator
 │
 ├── evals/                      # Deterministic Evaluation Harness
 │   ├── harness.py              # Test runner and assertion framework
-│   ├── scenarios.py            # 10 rigorous evaluation scenarios (67 assertions)
+│   ├── scenarios.py            # 12 rigorous evaluation scenarios (82 assertions)
 │   └── run_evals.py            # CLI entrypoint for test suite
 │
 ├── app.py                      # 🔮 Streamlit Cloud live application & real-time telemetry

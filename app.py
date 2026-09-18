@@ -653,12 +653,18 @@ with st.sidebar:
                 st.session_state.tools._fail_search = True
                 st.session_state.pending_query = "Search for quantum computing breakthroughs."
                 st.rerun()
+            if st.button("🌤️ Live Weather", use_container_width=True):
+                st.session_state.pending_query = "What is the current weather in Tokyo?"
+                st.rerun()
         with c2:
             if st.button("🧮 Math Query", use_container_width=True):
                 st.session_state.pending_query = "Calculate (45 * 12) + (180 / 4)"
                 st.rerun()
             if st.button("📝 Take Note", use_container_width=True):
                 st.session_state.pending_query = "Take note: Epochesque 2.0 Track 1 submission ready."
+                st.rerun()
+            if st.button("📖 Wikipedia", use_container_width=True):
+                st.session_state.pending_query = "Wikipedia summary of Alan Turing"
                 st.rerun()
 
     st.markdown("---")
@@ -879,6 +885,26 @@ with tab_context:
 
 # ── Tab: Tool Usage ──
 with tab_tools:
+    with st.expander("🛠️ Available Tools Registry (8 Active Tools)", expanded=False):
+        t_cols = st.columns(4)
+        tool_icons = {
+            "web_search": "🔍",
+            "read_url": "🌐",
+            "calculate": "🧮",
+            "analyze_data": "📊",
+            "take_note": "📝",
+            "get_weather": "🌤️",
+            "wikipedia_summary": "📖",
+            "datetime_info": "🕒",
+        }
+        for idx, schema in enumerate(st.session_state.tools.schemas):
+            t_name = schema["name"]
+            t_desc = schema["description"]
+            t_icon = tool_icons.get(t_name, "🔧")
+            with t_cols[idx % 4]:
+                st.markdown(f"**{t_icon} `{t_name}`**")
+                st.caption(t_desc[:90] + "...")
+
     tool_spans = [s for s in st.session_state.tracer.get_spans() if s.kind == SpanKind.TOOL]
     if tool_spans:
         tool_stats = {}
@@ -905,7 +931,7 @@ with tab_tools:
                 st.markdown(f"✅ {stats['ok']} ok · ❌ {stats['err']} err · ⏱️ {avg_ms}ms avg")
                 st.progress(rate / 100)
     else:
-        st.info("No tool calls yet.")
+        st.info("No tool calls yet. Select a 1-Click Demo Query in the sidebar or ask a question!")
 
 # ── Tab: Failures ──
 with tab_failures:

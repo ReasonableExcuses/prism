@@ -263,17 +263,88 @@ def s10_dashboard_gen(h: Harness) -> None:
     h.assert_contains(content, "Conversation", "Dashboard should have conversation replay section")
 
 
+# ===== s11: New Tools (Weather, Wikipedia, Datetime) =====
+def s11_new_tools(h: Harness) -> None:
+    """Verify the 3 new tools: get_weather, wikipedia_summary, datetime_info."""
+    h.setup()
+
+    # Check that tools registry contains all 8 schemas
+    schemas = h.tools.schemas
+    schema_names = [s["name"] for s in schemas]
+    h.assert_eq(len(schemas), 8, "Should have exactly 8 registered tool schemas")
+    h.assert_true("get_weather" in schema_names, "get_weather should be in schemas")
+    h.assert_true("wikipedia_summary" in schema_names, "wikipedia_summary should be in schemas")
+    h.assert_true("datetime_info" in schema_names, "datetime_info should be in schemas")
+
+    # Direct execution of datetime_info
+    res_dt = h.tools.execute("datetime_info", {"query": "now"})
+    h.assert_true(res_dt.success, "datetime_info should succeed")
+    h.assert_true("utc" in res_dt.data, "datetime_info should contain UTC time")
+
+    # Date diff calculation with datetime_info
+    res_diff = h.tools.execute("datetime_info", {"query": "2030-01-01"})
+    h.assert_true(res_diff.success, "datetime_info date math should succeed")
+    h.assert_true("days_difference" in res_diff.data, "datetime_info should compute days difference")
+
+    # Spans should record tool executions
+    tool_spans = [s for s in h.tracer.get_spans() if s.kind.value == "TOOL"]
+    h.assert_gt(len(tool_spans), 0, "Should have tool spans recorded")
+
+
+# ===== s12: Token Overflow Fallback =====
+def s12_token_overflow_fallback(h: Harness) -> None:
+    """When an LLM throws TokenOverflowError, agent compresses context and retries."""
+    from prism.llm import LLMInterface, LLMResponse, TokenOverflowError
+
+    class FlakyOverflowLLM(LLMInterface):
+        model_name = "flaky-overflow"
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, task, messages, tools, tracer):
+            self.calls += 1
+            if self.calls == 1:
+                raise TokenOverflowError("Mock 400: context_length_exceeded, maximum context length is 8192 tokens")
+            return LLMResponse(content="Successfully recovered and answered after context compression!")
+
+    flaky_llm = FlakyOverflowLLM()
+    h.setup()
+    h.agent.llm = flaky_llm
+
+    # Populate multiple turns into context first
+    for i in range(4):
+        h.context.add_turn("user", f"Historical message {i}")
+        h.context.add_turn("assistant", f"Historical answer {i}")
+
+    initial_turns = len(h.context._turns)
+    h.assert_gt(initial_turns, 2, "Should have several turns before overflow")
+
+    resp = h.agent.run("Please answer my new question")
+    h.assert_true("Successfully recovered" in resp.content, "Agent should successfully recover after compression")
+    h.assert_eq(flaky_llm.calls, 2, "LLM should have been called twice (1 failure + 1 retry)")
+
+    # Check that error_recovery step was recorded in response
+    recovery_steps = [s for s in resp.steps if s.action == "error_recovery"]
+    h.assert_gt(len(recovery_steps), 0, "Should record error_recovery step")
+
+    # Check that context turns were compressed (retained 2 turns + 1 final assistant turn = 3, down from 8+)
+    h.assert_true(len(h.context._turns) <= 3, "Context turns should have been compressed to <= 3")
+    h.assert_true(len(h.context._turns) < initial_turns, "Context turns should be significantly fewer than initial")
+
+
 # ===== Registry =====
 
 SCENARIOS = [
-    ("s01_basic_trace",       s01_basic_trace),
-    ("s02_tool_trace",        s02_tool_trace),
-    ("s03_nested_spans",      s03_nested_spans),
-    ("s04_failure_recovery",  s04_failure_recovery),
-    ("s05_long_conversation", s05_long_conversation),
-    ("s06_context_budget",    s06_context_budget),
-    ("s07_rolling_summary",   s07_rolling_summary),
-    ("s08_cost_tracking",     s08_cost_tracking),
-    ("s09_multi_tool",        s09_multi_tool),
-    ("s10_dashboard_gen",     s10_dashboard_gen),
+    ("s01_basic_trace",             s01_basic_trace),
+    ("s02_tool_trace",              s02_tool_trace),
+    ("s03_nested_spans",            s03_nested_spans),
+    ("s04_failure_recovery",        s04_failure_recovery),
+    ("s05_long_conversation",       s05_long_conversation),
+    ("s06_context_budget",          s06_context_budget),
+    ("s07_rolling_summary",         s07_rolling_summary),
+    ("s08_cost_tracking",           s08_cost_tracking),
+    ("s09_multi_tool",              s09_multi_tool),
+    ("s10_dashboard_gen",           s10_dashboard_gen),
+    ("s11_new_tools",               s11_new_tools),
+    ("s12_token_overflow_fallback", s12_token_overflow_fallback),
 ]

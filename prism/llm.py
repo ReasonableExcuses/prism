@@ -29,6 +29,15 @@ from prism.trace import Tracer, SpanKind
 
 
 # ---------------------------------------------------------------------------
+# Custom exception for token/context overflow
+# ---------------------------------------------------------------------------
+
+class TokenOverflowError(Exception):
+    """Raised when an LLM API rejects a request because the context is too long."""
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Response model
 # ---------------------------------------------------------------------------
 
@@ -97,11 +106,14 @@ class DeterministicLLM(LLMInterface):
 
     # Keywords that trigger specific tool selections
     _TOOL_TRIGGERS: dict[str, list[str]] = {
-        "web_search":    ["search", "find", "look up", "latest", "news", "what is", "who is", "current"],
-        "read_url":      ["read", "fetch", "url", "http", "website", "page", "article"],
-        "calculate":     ["calculate", "compute", "math", "sum", "average", "multiply", "divide", "add", "subtract", "percent", "formula"],
-        "analyze_data":  ["analyze", "data", "csv", "json", "statistics", "stats", "chart", "table", "dataset"],
-        "take_note":     ["note", "remember", "save", "record", "jot"],
+        "web_search":        ["search", "find", "look up", "latest", "news", "what is", "who is", "current"],
+        "read_url":          ["read", "fetch", "url", "http", "website", "page", "article"],
+        "calculate":         ["calculate", "compute", "math", "sum", "average", "multiply", "divide", "add", "subtract", "percent", "formula"],
+        "analyze_data":      ["analyze", "data", "csv", "json", "statistics", "stats", "chart", "table", "dataset"],
+        "take_note":         ["note", "remember", "save", "record", "jot"],
+        "get_weather":       ["weather", "temperature", "forecast", "rain", "climate", "humidity", "wind"],
+        "wikipedia_summary": ["wikipedia", "wiki", "summary of", "who was", "biography", "overview of"],
+        "datetime_info":     ["time", "date", "clock", "timestamp", "today", "days until", "days since", "timezone", "what time", "what day"],
     }
 
     def run(
@@ -234,6 +246,22 @@ class DeterministicLLM(LLMInterface):
                 "content": last_user,
                 "tag": "general"
             })
+        elif tool_name == "get_weather":
+            loc = re.sub(r'(?i)(what is the|what\'s the|tell me the|check the|get the|current)?\s*(weather|temperature|forecast)\s*(in|for|at|of)?', '', last_user).strip()
+            loc = re.sub(r'[?!.,;]+$', '', loc).strip()
+            if not loc:
+                loc = "London"
+            return ToolCall(name="get_weather", arguments={"location": loc})
+        elif tool_name == "wikipedia_summary":
+            topic = re.sub(r'(?i)(wikipedia summary of|wikipedia summary for|wikipedia of|wikipedia|wiki summary of|wiki|summary of|who was|who is|tell me about|biography of)?\s*', '', last_user).strip()
+            topic = re.sub(r'[?!.,;]+$', '', topic).strip()
+            if not topic:
+                topic = last_user.strip()
+            return ToolCall(name="wikipedia_summary", arguments={"topic": topic})
+        elif tool_name == "datetime_info":
+            date_match = re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', last_user)
+            query_val = date_match.group(0) if date_match else "now"
+            return ToolCall(name="datetime_info", arguments={"query": query_val})
         return ToolCall(name=tool_name, arguments={"input": last_user})
 
     def _synthesise_answer(
@@ -264,14 +292,17 @@ class DeterministicLLM(LLMInterface):
     def _conversational_response(self, query: str, messages: list[dict]) -> str:
         """Generate a simple conversational response."""
         if "hello" in query or "hi" in query:
-            return "Hello! I'm Prism, your AI research assistant. I can search the web, read articles, do calculations, analyze data, and take notes. How can I help you?"
+            return "Hello! I'm Prism, your AI research assistant. I can search the web, read articles, do calculations, analyze data, take notes, check weather, read Wikipedia, and give date/time info. How can I help you?"
         if "help" in query:
             return ("I can help you with:\n"
                     "• **Web Search** — Find information online\n"
                     "• **Read URLs** — Extract content from web pages\n"
                     "• **Calculate** — Do math computations\n"
                     "• **Analyze Data** — Process and summarize data\n"
-                    "• **Take Notes** — Save important findings\n\n"
+                    "• **Take Notes** — Save important findings\n"
+                    "• **Weather** — Live forecast and conditions via Open-Meteo\n"
+                    "• **Wikipedia** — Verified encyclopedia summaries\n"
+                    "• **Date & Time** — Timezone-aware clock & date calculations\n\n"
                     "Just ask me a question!")
         if "thank" in query:
             return "You're welcome! Let me know if you need anything else."
@@ -393,6 +424,10 @@ class GeminiLLM(LLMInterface):
                             err_text = err_data.get("error", {}).get("message", err_text)
                         except Exception:
                             pass
+                        # Detect token/context overflow
+                        overflow_keywords = ["token", "context_length", "too long", "context window", "max_tokens", "exceeds", "too many tokens"]
+                        if resp.status_code in (400, 413) and any(kw in err_text.lower() for kw in overflow_keywords):
+                            raise TokenOverflowError(f"Context overflow on {candidate_model}: {err_text}")
                         raise RuntimeError(f"Gemini API Error ({resp.status_code}): {err_text}")
 
                     data = resp.json()
@@ -539,6 +574,14 @@ class OpenAICompatibleLLM(LLMInterface):
                     payload["model"] = candidate_m
                     resp = requests.post(endpoint, json=payload, headers=headers, timeout=40)
                     if resp.status_code in (400, 404) and idx < len(fallback_models) - 1:
+                        # Check if this is a token overflow (don't fallback to another model for that)
+                        overflow_keywords = ["token", "context_length", "too long", "context window", "max_tokens", "exceeds", "too many tokens"]
+                        try:
+                            err_check = resp.json().get("error", {}).get("message", resp.text[:300])
+                        except Exception:
+                            err_check = resp.text[:300]
+                        if any(kw in err_check.lower() for kw in overflow_keywords):
+                            raise TokenOverflowError(f"Context overflow on {candidate_m}: {err_check}")
                         # Model decommissioned or not accessible; try next active candidate
                         continue
                     if resp.status_code != 200:
@@ -548,6 +591,10 @@ class OpenAICompatibleLLM(LLMInterface):
                             err_text = err_json.get("error", {}).get("message", err_text)
                         except Exception:
                             pass
+                        # Also check non-fallback errors for overflow
+                        overflow_keywords = ["token", "context_length", "too long", "context window", "max_tokens", "exceeds", "too many tokens"]
+                        if resp.status_code in (400, 413) and any(kw in err_text.lower() for kw in overflow_keywords):
+                            raise TokenOverflowError(f"Context overflow on {candidate_m}: {err_text}")
                         raise RuntimeError(f"{self.provider_name} API Error ({resp.status_code}): {err_text}")
 
                     data = resp.json()

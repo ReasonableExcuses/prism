@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from prism.trace import Tracer, SpanKind
-from prism.llm import LLMInterface, LLMResponse, ToolCall
+from prism.llm import LLMInterface, LLMResponse, ToolCall, TokenOverflowError
 from prism.tools import ToolRegistry, ToolResult
 from prism.context import ContextEngine
 
@@ -159,12 +159,46 @@ class Agent:
 
                 # PLAN: ask the LLM what to do
                 with self.tracer.span("plan", SpanKind.AGENT) as plan_span:
-                    llm_response = self.llm.run(
-                        task="plan_and_act",
-                        messages=messages,
-                        tools=self.tools.schemas,
-                        tracer=self.tracer,
-                    )
+                    # Token overflow recovery: compress context and retry
+                    llm_response = None
+                    for compress_attempt in range(3):  # original + 2 retries
+                        try:
+                            llm_response = self.llm.run(
+                                task="plan_and_act",
+                                messages=messages,
+                                tools=self.tools.schemas,
+                                tracer=self.tracer,
+                            )
+                            break  # success
+                        except TokenOverflowError as e:
+                            if compress_attempt >= 2:
+                                # Exhausted retries — fall back to a graceful message
+                                plan_span.set_error(f"Token overflow after {compress_attempt + 1} compression attempts: {e}")
+                                self._steps.append(AgentStep(
+                                    step_number=self._step_count,
+                                    action="error_recovery",
+                                    content=f"Context too large even after compression. Error: {e}",
+                                ))
+                                return (
+                                    "I'm sorry, but the conversation context has grown too large for the model to process. "
+                                    "I've compressed the history as much as possible. Please try a shorter question, "
+                                    "or reset the session in the sidebar for a fresh start."
+                                )
+
+                            # Log the compression recovery step
+                            self._steps.append(AgentStep(
+                                step_number=self._step_count,
+                                action="error_recovery",
+                                content=f"Token overflow detected (attempt {compress_attempt + 1}). Compressing context and retrying...",
+                            ))
+                            plan_span.add_event("token_overflow_recovery",
+                                                attempt=compress_attempt + 1,
+                                                error=str(e)[:200])
+
+                            # Compress and rebuild
+                            self.context.force_compress(self.tracer)
+                            messages = self.context.build_context(self.tracer)
+
                     plan_span.set_attr("has_tool_calls", bool(llm_response.tool_calls))
                     plan_span.set_attr("has_content", bool(llm_response.content))
 

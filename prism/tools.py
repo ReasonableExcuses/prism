@@ -1,16 +1,19 @@
 """
-prism/tools.py — Five real tools the agent chooses between dynamically.
+prism/tools.py — Eight real tools the agent chooses between dynamically.
 
 Thesis: every tool call is a traced span.  When a tool fails, it returns
 a structured error with a recovery hint — the agent sees the hint and
 can re-plan, and the trace records the failure + recovery arc.
 
 Tools:
-  - web_search   — search the web via DuckDuckGo (no API key)
-  - read_url     — fetch + extract text from a URL
-  - calculate    — safe math expression evaluation
-  - analyze_data — process structured data, compute statistics
-  - take_note    — save a finding to a persistent scratchpad
+  - web_search        — search the web via DuckDuckGo (no API key)
+  - read_url          — fetch + extract text from a URL
+  - calculate         — safe math expression evaluation
+  - analyze_data      — process structured data, compute statistics
+  - take_note         — save a finding to a persistent scratchpad
+  - get_weather       — current weather via Open-Meteo (no API key)
+  - wikipedia_summary — article summary via Wikipedia REST API
+  - datetime_info     — current time, timezone, date math
 
 Deliberate failure modes:
   - web_search with timeout / rate limit
@@ -147,6 +150,48 @@ TOOL_SCHEMAS: list[dict] = [
             "required": ["content"]
         }
     },
+    {
+        "name": "get_weather",
+        "description": "Get current weather conditions for a city or location. Returns temperature, humidity, wind speed, and weather description. Uses Open-Meteo (free, no API key required).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "City name or location (e.g., 'London', 'New York', 'Tokyo')"
+                }
+            },
+            "required": ["location"]
+        }
+    },
+    {
+        "name": "wikipedia_summary",
+        "description": "Get the summary/introduction of a Wikipedia article. Returns a concise overview of the topic. Great for factual lookups about people, places, concepts, and events.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "The topic to look up on Wikipedia (e.g., 'quantum computing', 'Albert Einstein', 'Python programming')"
+                }
+            },
+            "required": ["topic"]
+        }
+    },
+    {
+        "name": "datetime_info",
+        "description": "Get the current date, time, and timezone information. Can also perform date calculations like 'days until' or 'days since' a given date. Useful for time-sensitive questions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to compute — 'now' for current time, or a date like '2025-12-25' to calculate days until/since"
+                }
+            },
+            "required": ["query"]
+        }
+    },
 ]
 
 
@@ -186,11 +231,14 @@ class ToolRegistry:
 
             try:
                 handler = {
-                    "web_search":    self._web_search,
-                    "read_url":      self._read_url,
-                    "calculate":     self._calculate,
-                    "analyze_data":  self._analyze_data,
-                    "take_note":     self._take_note,
+                    "web_search":        self._web_search,
+                    "read_url":          self._read_url,
+                    "calculate":         self._calculate,
+                    "analyze_data":      self._analyze_data,
+                    "take_note":         self._take_note,
+                    "get_weather":       self._get_weather,
+                    "wikipedia_summary": self._wikipedia_summary,
+                    "datetime_info":     self._datetime_info,
                 }.get(tool_name)
 
                 if not handler:
@@ -592,3 +640,273 @@ class ToolRegistry:
         for note in self._notes:
             lines.append(f"  [{note['tag']}] #{note['id']}: {note['content'][:80]}")
         return "\n".join(lines)
+
+    # -----------------------------------------------------------------------
+    # Weather tool
+    # -----------------------------------------------------------------------
+
+    def _get_weather(self, location: str, **kwargs: Any) -> ToolResult:
+        """Get current weather using Open-Meteo API (free, no key)."""
+        if not location or not location.strip():
+            return ToolResult(
+                success=False,
+                error="No location provided",
+                hint="Provide a city name like 'London', 'New York', or 'Tokyo'."
+            )
+
+        try:
+            import requests
+
+            # Step 1: Geocode the location
+            geo_resp = requests.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": location.strip(), "count": 1, "language": "en"},
+                timeout=10,
+            )
+            geo_resp.raise_for_status()
+            geo_data = geo_resp.json()
+
+            results = geo_data.get("results", [])
+            if not results:
+                return ToolResult(
+                    success=False,
+                    error=f"Location not found: '{location}'",
+                    hint="Try a more specific city name, e.g., 'London, UK' or 'New York, US'."
+                )
+
+            place = results[0]
+            lat = place["latitude"]
+            lon = place["longitude"]
+            place_name = place.get("name", location)
+            country = place.get("country", "")
+
+            # Step 2: Get current weather
+            weather_resp = requests.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "current_weather": True,
+                    "current": "temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,weather_code",
+                },
+                timeout=10,
+            )
+            weather_resp.raise_for_status()
+            weather_data = weather_resp.json()
+
+            current = weather_data.get("current", weather_data.get("current_weather", {}))
+            temp = current.get("temperature_2m", current.get("temperature", "N/A"))
+            feels_like = current.get("apparent_temperature", "N/A")
+            humidity = current.get("relative_humidity_2m", "N/A")
+            wind = current.get("wind_speed_10m", current.get("windspeed", "N/A"))
+            wmo_code = current.get("weather_code", current.get("weathercode", 0))
+
+            # WMO weather code descriptions
+            wmo_descriptions = {
+                0: "Clear sky ☀️", 1: "Mainly clear 🌤️", 2: "Partly cloudy ⛅",
+                3: "Overcast ☁️", 45: "Fog 🌫️", 48: "Depositing rime fog 🌫️",
+                51: "Light drizzle 🌦️", 53: "Moderate drizzle 🌦️", 55: "Dense drizzle 🌧️",
+                61: "Slight rain 🌧️", 63: "Moderate rain 🌧️", 65: "Heavy rain 🌧️",
+                71: "Slight snow ❄️", 73: "Moderate snow 🌨️", 75: "Heavy snow 🌨️",
+                80: "Slight showers 🌦️", 81: "Moderate showers 🌧️", 82: "Violent showers ⛈️",
+                95: "Thunderstorm ⛈️", 96: "Thunderstorm with hail ⛈️",
+            }
+            description = wmo_descriptions.get(wmo_code, f"WMO code {wmo_code}")
+
+            return ToolResult(
+                success=True,
+                data={
+                    "location": f"{place_name}, {country}",
+                    "coordinates": {"lat": lat, "lon": lon},
+                    "temperature_celsius": temp,
+                    "feels_like_celsius": feels_like,
+                    "humidity_percent": humidity,
+                    "wind_speed_kmh": wind,
+                    "condition": description,
+                    "summary": f"{description} · {temp}°C (feels like {feels_like}°C) · Humidity {humidity}% · Wind {wind} km/h",
+                }
+            )
+
+        except requests.exceptions.Timeout:
+            return ToolResult(
+                success=False,
+                error="Weather API timed out",
+                hint="The weather service is slow. Try again or use web_search as a fallback."
+            )
+        except requests.exceptions.RequestException as e:
+            return ToolResult(
+                success=False,
+                error=f"Weather API error: {e}",
+                hint="Check your internet connection. You can also use web_search to find weather info."
+            )
+        except ImportError:
+            return ToolResult(
+                success=False,
+                error="Weather tool requires the 'requests' library.",
+                hint="Install with: pip install requests"
+            )
+
+    # -----------------------------------------------------------------------
+    # Wikipedia summary tool
+    # -----------------------------------------------------------------------
+
+    def _wikipedia_summary(self, topic: str, **kwargs: Any) -> ToolResult:
+        """Get the summary of a Wikipedia article."""
+        if not topic or not topic.strip():
+            return ToolResult(
+                success=False,
+                error="No topic provided",
+                hint="Provide a topic like 'quantum computing' or 'Albert Einstein'."
+            )
+
+        try:
+            import requests
+
+            # Use Wikipedia REST API
+            encoded_topic = topic.strip().replace(" ", "_")
+            resp = requests.get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_topic}",
+                headers={"User-Agent": "Prism/1.0 Research Agent"},
+                timeout=10,
+            )
+
+            if resp.status_code == 404:
+                # Try search API as fallback
+                search_resp = requests.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={
+                        "action": "opensearch",
+                        "search": topic.strip(),
+                        "limit": 5,
+                        "format": "json",
+                    },
+                    timeout=10,
+                )
+                search_resp.raise_for_status()
+                search_data = search_resp.json()
+                suggestions = search_data[1] if len(search_data) > 1 else []
+
+                if suggestions:
+                    return ToolResult(
+                        success=False,
+                        error=f"No Wikipedia article found for '{topic}'",
+                        hint=f"Did you mean: {', '.join(suggestions[:3])}? Try one of these."
+                    )
+                return ToolResult(
+                    success=False,
+                    error=f"No Wikipedia article found for '{topic}'",
+                    hint="Try a different spelling or a more common term. You can also use web_search."
+                )
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            title = data.get("title", topic)
+            extract = data.get("extract", "No summary available.")
+            description = data.get("description", "")
+            url = data.get("content_urls", {}).get("desktop", {}).get("page", f"https://en.wikipedia.org/wiki/{encoded_topic}")
+
+            # Truncate if very long
+            if len(extract) > 2000:
+                extract = extract[:2000] + "... [truncated]"
+
+            return ToolResult(
+                success=True,
+                data={
+                    "title": title,
+                    "description": description,
+                    "summary": extract,
+                    "url": url,
+                    "source": "Wikipedia",
+                }
+            )
+
+        except requests.exceptions.Timeout:
+            return ToolResult(
+                success=False,
+                error="Wikipedia API timed out",
+                hint="Try again or use web_search instead."
+            )
+        except requests.exceptions.RequestException as e:
+            return ToolResult(
+                success=False,
+                error=f"Wikipedia API error: {e}",
+                hint="Check your internet connection or try web_search."
+            )
+        except ImportError:
+            return ToolResult(
+                success=False,
+                error="Wikipedia tool requires the 'requests' library.",
+                hint="Install with: pip install requests"
+            )
+
+    # -----------------------------------------------------------------------
+    # Datetime info tool
+    # -----------------------------------------------------------------------
+
+    def _datetime_info(self, query: str = "now", **kwargs: Any) -> ToolResult:
+        """Get current date/time or do date calculations."""
+        from datetime import datetime, timezone, timedelta
+
+        query = (query or "now").strip().lower()
+        now = datetime.now(timezone.utc)
+
+        if query in ("now", "current", "time", "date", "today"):
+            return ToolResult(
+                success=True,
+                data={
+                    "utc": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "date": now.strftime("%A, %B %d, %Y"),
+                    "time": now.strftime("%H:%M:%S"),
+                    "timestamp": int(now.timestamp()),
+                    "iso": now.isoformat(),
+                    "day_of_week": now.strftime("%A"),
+                    "day_of_year": now.timetuple().tm_yday,
+                    "week_number": now.isocalendar()[1],
+                }
+            )
+
+        # Try to parse a date and compute days until/since
+        import re as _re
+        date_match = _re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', query)
+        if date_match:
+            try:
+                year, month, day = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+                target = datetime(year, month, day, tzinfo=timezone.utc)
+                delta = target - now
+                days_diff = delta.days
+
+                if days_diff > 0:
+                    relation = f"{days_diff} days from now"
+                elif days_diff < 0:
+                    relation = f"{abs(days_diff)} days ago"
+                else:
+                    relation = "today"
+
+                return ToolResult(
+                    success=True,
+                    data={
+                        "target_date": target.strftime("%A, %B %d, %Y"),
+                        "current_date": now.strftime("%A, %B %d, %Y"),
+                        "days_difference": days_diff,
+                        "relation": relation,
+                        "target_day_of_week": target.strftime("%A"),
+                    }
+                )
+            except (ValueError, OverflowError) as e:
+                return ToolResult(
+                    success=False,
+                    error=f"Invalid date: {e}",
+                    hint="Use format YYYY-MM-DD, e.g., '2025-12-25'."
+                )
+
+        # Fallback: return current time with a note
+        return ToolResult(
+            success=True,
+            data={
+                "utc": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "date": now.strftime("%A, %B %d, %Y"),
+                "time": now.strftime("%H:%M:%S"),
+                "note": f"Didn't understand '{query}'. Showing current time. For date math, use format YYYY-MM-DD.",
+            }
+        )
