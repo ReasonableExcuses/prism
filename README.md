@@ -28,8 +28,7 @@
   <a href="#-system-architecture"><strong>Architecture</strong></a> •
   <a href="#-multi-model-inference-engine"><strong>Multi-Model Engine</strong></a> •
   <a href="#-quickstart"><strong>Quickstart</strong></a> •
-  <a href="#-evaluation-suite--benchmarks"><strong>Eval Benchmarks</strong></a> •
-  <a href="#-track-1-judging-scorecard"><strong>Judging Rubric</strong></a>
+  <a href="#-evaluation-suite--benchmarks"><strong>Eval Benchmarks</strong></a>
 </p>
 
 ---
@@ -338,40 +337,6 @@ Prism is backed by a deterministic evaluation harness that validates every syste
 
 *Benchmark execution time: **~8.1 seconds** on standard hardware.*
 
----
-
-## 🏆 Track 1 Judging Scorecard
-
-How Prism directly fulfills and exceeds every judging criterion for **Epochesque 2.0 Track 1**:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       TRACK 1 RUBRIC COMPLIANCE MATRIX                      │
-├─────────────────────────┬───────┬───────────────────────────────────────────┤
-│ Evaluation Criterion    │Weight │ Prism Implementation Evidence             │
-├─────────────────────────┼───────┼───────────────────────────────────────────┤
-│ 1. Problem Depth        │  25%  │ Ground-up architecture; 5 native tools;   │
-│                         │       │ hierarchical telemetry; 3-tier memory;    │
-│                         │       │ multi-provider inference engine.          │
-├─────────────────────────┼───────┼───────────────────────────────────────────┤
-│ 2. Technical Execution  │  25%  │ 67/67 automated assertions passed; zero   │
-│                         │       │ external framework dependencies; clean    │
-│                         │       │ typed Python; micro-cost attribution.     │
-├─────────────────────────┼───────┼───────────────────────────────────────────┤
-│ 3. Rule Compliance      │  20%  │ • Trace generated per run (JSONL & HTML)  │
-│                         │       │ • Real failure case caught via tracing    │
-│                         │       │ • 20+ turn conversation without overflow  │
-│                         │       │ • Explicit token & cost accounting        │
-├─────────────────────────┼───────┼───────────────────────────────────────────┤
-│ 4. Edge Case Handling   │  15%  │ Structured error recovery hints; graceful │
-│                         │       │ API timeout fallbacks; strict budget caps;│
-│                         │       │ sandboxed calculation parsing.            │
-├─────────────────────────┼───────┼───────────────────────────────────────────┤
-│ 5. Presentation & Demo  │  15%  │ Live Streamlit Cloud app; 7-tab HTML      │
-│                         │       │ flamegraph dashboard; interactive REPL;   │
-│                         │       │ comprehensive documentation & diagrams.   │
-└─────────────────────────┴───────┴───────────────────────────────────────────┘
-```
 
 ---
 

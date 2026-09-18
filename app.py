@@ -463,48 +463,124 @@ with st.sidebar:
         user_api_key = None
 
         if chosen_provider == "groq":
-            chosen_model = st.selectbox("Groq Model", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"])
+            groq_models = [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "qwen-2.5-32b",
+                "deepseek-r1-distill-llama-70b",
+                "gemma2-9b-it",
+            ]
+            chosen_model = st.selectbox("Groq Model", groq_models)
             env_key = os.environ.get("GROQ_API_KEY") or (st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
             st.caption("🔑 Free key in 30 seconds (no credit card): [console.groq.com/keys](https://console.groq.com/keys)")
-            user_api_key = st.text_input("Groq API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+            user_api_key = st.text_input(
+                "Groq API Key (starts with gsk_)",
+                value=st.session_state.get("api_key_groq", "") or (env_key or ""),
+                type="password",
+                key="input_api_key_groq"
+            )
+            if user_api_key:
+                st.session_state["api_key_groq"] = user_api_key
+                if not user_api_key.startswith("gsk_"):
+                    st.warning("⚠️ Warning: Groq API keys start with **gsk_**. It looks like you pasted a key from another provider (e.g. Gemini or OpenAI), which Groq will reject with a 404/401 error.")
+            else:
+                st.info("💡 Enter your free Groq API key above, or switch to **Deterministic** mode below for instant zero-key testing.")
+
         elif chosen_provider == "openrouter":
-            chosen_model = st.selectbox("OpenRouter Model", ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free", "qwen/qwen-2.5-72b-instruct:free"])
+            openrouter_models = [
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "google/gemini-2.0-flash-exp:free",
+                "qwen/qwen-2.5-72b-instruct:free",
+                "deepseek/deepseek-r1:free",
+                "mistralai/mistral-7b-instruct:free",
+            ]
+            chosen_model = st.selectbox("OpenRouter Model", openrouter_models)
             env_key = os.environ.get("OPENROUTER_API_KEY") or (st.secrets.get("OPENROUTER_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
-            st.caption("🔑 Get OpenRouter key: [openrouter.ai/keys](https://openrouter.ai/keys)")
-            user_api_key = st.text_input("OpenRouter API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+            st.caption("🔑 Free key at [openrouter.ai/keys](https://openrouter.ai/keys)")
+            user_api_key = st.text_input(
+                "OpenRouter API Key (starts with sk-or-)",
+                value=st.session_state.get("api_key_openrouter", "") or (env_key or ""),
+                type="password",
+                key="input_api_key_openrouter"
+            )
+            if user_api_key:
+                st.session_state["api_key_openrouter"] = user_api_key
+                if not user_api_key.startswith("sk-or-"):
+                    st.warning("⚠️ Warning: OpenRouter API keys usually start with **sk-or-**.")
+            else:
+                st.info("💡 Enter your OpenRouter key above, or switch to **Deterministic** mode for zero-key testing.")
+
         elif chosen_provider == "gemini":
             chosen_model = st.selectbox("Gemini Model", ["gemini-3.6-flash", "gemini-flash-latest", "gemini-3.8-flash", "gemini-pro-latest"])
             env_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
             st.caption("🔑 Free Google key: [aistudio.google.com](https://aistudio.google.com)")
-            user_api_key = st.text_input("Gemini API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+            user_api_key = st.text_input(
+                "Gemini API Key (starts with AIza / AQ.)",
+                value=st.session_state.get("api_key_gemini", "") or (env_key or ""),
+                type="password",
+                key="input_api_key_gemini"
+            )
+            if user_api_key:
+                st.session_state["api_key_gemini"] = user_api_key
+                if not (user_api_key.startswith("AIza") or user_api_key.startswith("AQ.")):
+                    st.warning("⚠️ Warning: Google Gemini keys typically start with **AIza** or **AQ.**.")
+            else:
+                st.info("💡 Enter your Gemini key above, or switch to **Deterministic** mode for zero-key testing.")
+
         elif chosen_provider == "openai":
             chosen_model = st.selectbox("OpenAI Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"])
             env_key = os.environ.get("OPENAI_API_KEY") or (st.secrets.get("OPENAI_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
-            user_api_key = st.text_input("OpenAI API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+            user_api_key = st.text_input(
+                "OpenAI API Key (starts with sk-)",
+                value=st.session_state.get("api_key_openai", "") or (env_key or ""),
+                type="password",
+                key="input_api_key_openai"
+            )
+            if user_api_key:
+                st.session_state["api_key_openai"] = user_api_key
+
         elif chosen_provider == "anthropic":
             chosen_model = st.selectbox("Claude Model", ["claude-haiku-3.5", "claude-3-5-sonnet-20241022"])
             env_key = os.environ.get("ANTHROPIC_API_KEY") or (st.secrets.get("ANTHROPIC_API_KEY") if hasattr(st, "secrets") else None)
             if env_key:
                 st.caption("✅ Key detected from environment/secrets")
-            user_api_key = st.text_input("Anthropic API Key", value=st.session_state.get("api_key", "") or (env_key or ""), type="password")
+            user_api_key = st.text_input(
+                "Anthropic API Key (starts with sk-ant-)",
+                value=st.session_state.get("api_key_anthropic", "") or (env_key or ""),
+                type="password",
+                key="input_api_key_anthropic"
+            )
+            if user_api_key:
+                st.session_state["api_key_anthropic"] = user_api_key
         else:
             chosen_model = "deterministic"
             user_api_key = ""
 
         # Update LLM if changed
-        if (chosen_provider != st.session_state.get("provider") or
-            chosen_model != st.session_state.get("model_name") or
-            user_api_key != st.session_state.get("api_key")):
+        current_active_p = st.session_state.get("provider")
+        current_active_m = st.session_state.get("model_name")
+        current_active_k = st.session_state.get("api_key")
+
+        if (chosen_provider != current_active_p or
+            chosen_model != current_active_m or
+            user_api_key != current_active_k):
             try:
-                new_llm = create_llm(provider=chosen_provider, model=chosen_model, api_key=user_api_key or None)
+                # If an API provider is chosen but no key is available, fallback safely to Deterministic
+                effective_provider = chosen_provider
+                effective_model = chosen_model
+                if chosen_provider != "deterministic" and not user_api_key:
+                    effective_provider = "deterministic"
+                    effective_model = "deterministic"
+
+                new_llm = create_llm(provider=effective_provider, model=effective_model, api_key=user_api_key or None)
                 st.session_state.llm = new_llm
                 st.session_state.provider = chosen_provider
                 st.session_state.model_name = chosen_model
@@ -603,9 +679,20 @@ with st.sidebar:
                 "meta": " · ".join(meta_parts),
             })
         except Exception as e:
+            provider_now = st.session_state.get("provider", "deterministic")
+            hint = ""
+            if provider_now == "gemini":
+                hint = "\n\n*Tip: Free-tier Gemini keys have rate limits (e.g. 5-15 req/min) or queue delays. You can wait ~30s, try Groq / OpenRouter in the sidebar, or switch to `Deterministic` mode for instant offline execution.*"
+            elif provider_now == "groq":
+                hint = "\n\n*Tip: Groq keys start with `gsk_` (free at [console.groq.com/keys](https://console.groq.com/keys)). Make sure you haven't pasted a Gemini key into the Groq field. You can also switch to `Deterministic` mode for instant execution.*"
+            elif provider_now == "openrouter":
+                hint = "\n\n*Tip: OpenRouter free models end with `:free` and keys start with `sk-or-` from [openrouter.ai/keys](https://openrouter.ai/keys). You can also switch to `Deterministic` mode.*"
+            else:
+                hint = "\n\n*Tip: You can switch to `Deterministic` mode in the sidebar for unlimited, instant offline execution.*"
+
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": f"⚠️ **Execution Notice**: `{e}`\n\n*Note: Free-tier Gemini keys have rate limits (e.g. 5 requests/min). You can wait ~30s or switch back to `Deterministic` mode in the sidebar for unlimited, instant offline execution.*",
+                "content": f"⚠️ **Execution Notice**: `{e}`{hint}",
             })
         st.rerun()
 
